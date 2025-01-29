@@ -80,10 +80,61 @@ namespace JSON_to_SQL_POC
             try
             {
                 var jsonObj = JToken.Parse(jsonTextBox.Text);
-                string sqlCase = ConvertJsonToSql(jsonObj);
+                bool enableMissingAlert = true;
+                string sqlCase = ConvertJsonToSql(jsonObj, enableMissingAlert);
 
-                string output = GenerateDynamicCaseStatement(sqlCase);
-                sqlQuery.Text = output;
+                string caseStatement = GenerateDynamicCaseStatement(sqlCase);
+
+                // Input parameters for Insert query generation
+                string sourceTable = "Activity_HealthNet_Commercial_Fields_V";
+                string extensionTable = "Activity_HealthNet_Commercial_Ext";
+                string[] insertColumns = { "[MASTER_ROWID]", "[COMPANY_ID]", "[HPCODE]", "[OPT]" };
+
+                // Dictionary to map columns to their CASE statements (if flag is true)
+                Dictionary<string, string> columnCaseStatements = new Dictionary<string, string>
+                {
+                    { "[MASTER_ROWID]", "[ROWID]" },
+                    { "[HPCODE]", @"
+                                CASE
+                                  WHEN [Provider_ID_Comp] = 'M0L7' AND [HealthPlanCode] = 'ABC' THEN 'PPN'
+                                  WHEN [Provider_ID_Comp] = 'M2638' AND [HealthPlanCode] = 'ABD' THEN 'BELLAVISTA'
+                                  WHEN [Provider_ID_Comp] = 'M2643' AND [HealthPlanCode] = 'ABC' THEN 'HCLA'
+                                  WHEN [Provider_ID_Comp] = 'M2651' AND [HealthPlanCode] = 'ABE' THEN 'AHISP'
+                                  WHEN [Provider_ID_Comp] = 'M2659' AND [HealthPlanCode] = 'ABD' THEN 'GLOBAL'
+                                  WHEN [Provider_ID_Comp] = 'M2775' AND [HealthPlanCode] = 'AB' THEN 'CCMG'
+                                  ELSE 'Mahesh'
+                                END"
+                     },
+                    {
+                        "[COMPANY_ID]", @"
+                                CASE
+                                  WHEN [Computed_Provider_ID] = 'M0L7' THEN CONCAT('PPN', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2638' THEN CONCAT('BELLAVISTA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2643' THEN CONCAT('HCLA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2651' THEN CONCAT('AHISP', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2659' THEN CONCAT('GLOBAL', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2775' THEN CONCAT('CCMG', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2891' THEN CONCAT('CVIPA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M2971' THEN CONCAT('PRUDENT', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3121' THEN CONCAT('FCS', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3122' THEN CONCAT('FCS', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3140' THEN CONCAT('FCS', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3141' THEN CONCAT('FCS', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3171' THEN CONCAT('PPN', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3674' THEN CONCAT('HCLA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3887' THEN CONCAT('HCLA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3888' THEN CONCAT('HCLA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3914' THEN CONCAT('HCLA', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M3932' THEN CONCAT('AHCN', [AidCode])
+                                  WHEN [Computed_Provider_ID] = 'M4077' THEN CONCAT('EHIPA', [AidCode])
+                                ELSE NULL
+                                END"
+                    }
+                };
+
+                string insertQuery = GenerateInsertQuery(extensionTable, sourceTable, insertColumns, columnCaseStatements);
+
+                sqlQuery.Text = insertQuery;
             }
             catch (Exception ex)
             {
@@ -91,19 +142,21 @@ namespace JSON_to_SQL_POC
             }
         }
 
-        private string ConvertJsonToSql(JToken token)
+        private string ConvertJsonToSql(JToken token, bool enableMissingAlert)
         {
             StringBuilder sql = new StringBuilder();
             sql.AppendLine("CASE");
-            ProcessIfStatement(token, sql, 1);
+            ProcessIfStatement(token, sql, 1, enableMissingAlert);
             sql.Append("END");
             return sql.ToString();
         }
 
-        private void ProcessIfStatement(JToken token, StringBuilder sql, int depth)
+        private void ProcessIfStatement(JToken token, StringBuilder sql, int depth, bool enableMissingAlert = false)
         {
             if (token.Type != JTokenType.Object || !token["if"].HasValues)
                 return;
+
+            //enableMissingAlert = true;
 
             var condition = token["if"][0];
             var thenValue = token["if"][1];
@@ -118,7 +171,8 @@ namespace JSON_to_SQL_POC
             }
             else
             {
-                sql.AppendLine($"  ELSE {(ParseOperand(elseValue) == null ? "NULL" : $"{ParseOperand(elseValue)}")}");
+                string elseTextValue = (enableMissingAlert ? "UNKNOWN" : "NULL");
+                sql.AppendLine($"  ELSE {(ParseOperand(elseValue) == null ? elseTextValue : $"{ParseOperand(elseValue)}")}");
             }
         }
 
@@ -174,8 +228,8 @@ namespace JSON_to_SQL_POC
                 }
                 else if (condition["like"] != null)
                 {
-                    var searchValue = ParseOperand(condition["like"][0]);
-                    var field = ParseOperand(condition["like"][1]);
+                    var field = ParseOperand(condition["like"][0]);
+                    var searchValue = ParseOperand(condition["like"][1]);
                     return $"{field} LIKE '{searchValue.Replace("'", "")}'";
                 }
                 else if (condition["in"] != null)
@@ -358,14 +412,13 @@ namespace JSON_to_SQL_POC
             string whenPart = whenThenMatch.Groups[1].Value.Trim();
             string thenPart = whenThenMatch.Groups[2].Value.Trim();
 
-            // Check if the WHEN part contains _CrosswalkTable
-            string selectStatement = GenerateDynamicSelectStatement(clause);
-            List<Dictionary<string, object>> crosswalkTableData = RetrieveCrosswalkTableDataFromDatabase(selectStatement);
-
             // Extract all conditions in the WHEN part using regex
             var conditionMatches = Regex.Matches(whenPart, @"\[(\w+_CrosswalkTable)\.(\w+)\]");
             if (conditionMatches.Count > 0)
             {
+                string selectStatement = GenerateDynamicSelectStatement(clause);
+                List<Dictionary<string, object>> crosswalkTableData = RetrieveCrosswalkTableDataFromDatabase(selectStatement);
+
                 foreach (var row in crosswalkTableData)
                 {
                     string dynamicWhenPart = whenPart;
@@ -409,78 +462,94 @@ namespace JSON_to_SQL_POC
             }
         }
 
+        public static string GenerateInsertBase(string extensionTable, string sourceTable, string[] insertColumns)
+        {
+            // Build the INSERT INTO clause
+            StringBuilder insertClause = new StringBuilder();
+            insertClause.Append($@"
+INSERT INTO [dbo].[{extensionTable}]
+    (");
 
-        //static void ProcessWhenThenClause(string clause, StringBuilder output)
-        //{
-        //    // Extract the WHEN and THEN parts
-        //    var whenThenMatch = Regex.Match(clause, @"WHEN\s+(.*)\s+THEN\s+(.*)");
-        //    if (!whenThenMatch.Success)
-        //    {
-        //        output.AppendLine(clause); // Append as-is if no WHEN ... THEN pattern is found
-        //        return;
-        //    }
+            for (int i = 0; i < insertColumns.Length; i++)
+            {
+                insertClause.Append(insertColumns[i]);
+                if (i < insertColumns.Length - 1)
+                {
+                    insertClause.Append(", ");
+                }
+            }
 
-        //    string whenPart = whenThenMatch.Groups[1].Value.Trim();
-        //    string thenPart = whenThenMatch.Groups[2].Value.Trim();
+            insertClause.Append(")");
 
-        //    // Check if the WHEN part contains _CrosswalkTable
-        //    var whenCrosswalkMatch = Regex.Match(whenPart, @"\[(\w+_CrosswalkTable)\.(\w+)\]");
-        //    if (whenCrosswalkMatch.Success)
-        //    {
-        //        string crosswalkTable = whenCrosswalkMatch.Groups[1].Value; // e.g., COMPANY_ID_CrosswalkTable
-        //        string crosswalkColumn = whenCrosswalkMatch.Groups[2].Value; // e.g., Provider_ID
+            // Add the FROM and ORDER BY clauses
+            insertClause.Append($@"
+FROM {sourceTable}
+ORDER BY [ROWID];");
 
-        //        string selectStatement = GenerateDynamicSelectStatement(clause);
-        //        List<Dictionary<string, object>> crosswalkTableData = RetrieveCrosswalkTableDataFromDatabase(selectStatement);
+            return insertClause.ToString();
+        }
 
-        //        // Loop through crosswalkTableData to find matching rows
-        //        foreach (var row in crosswalkTableData)
-        //        {
-        //            foreach (var kvp in row)
-        //            {
-        //                // Check if the key contains the crosswalk column and table
-        //                if (kvp.Key.Contains(crosswalkColumn)) //&& kvp.Key.Contains(crosswalkTable.Replace("_CrosswalkTable", "")))
-        //                {
-        //                    var columnValue = kvp.Value;
+        public static string GenerateSelectCaseColumn(string columnName, string caseStatement)
+        {
+            // Build the SELECT column mapping with the CASE statement
+            return $@"
+    {columnName} = {caseStatement},";
+        }
 
-        //                    // Replace the _CrosswalkTable column with its value in the WHEN part
-        //                    string dynamicWhenPart = whenPart.Replace($"[{crosswalkTable}.{crosswalkColumn}]", $"'{columnValue}'");
 
-        //                    // Process the THEN part if it contains _CrosswalkTable
-        //                    string dynamicThenPart = thenPart;
-        //                    var thenCrosswalkMatch = Regex.Match(thenPart, @"\[(\w+_CrosswalkTable)\.(\w+)\]");
-        //                    if (thenCrosswalkMatch.Success)
-        //                    {
-        //                        string thenCrosswalkTable = thenCrosswalkMatch.Groups[1].Value;
-        //                        string thenCrosswalkColumn = thenCrosswalkMatch.Groups[2].Value;
+        public static string GenerateInsertQuery(string extensionTable, string sourceTable, string[] insertColumns, Dictionary<string, string> columnCaseStatements)
+        {
+            // Validate input
+            if (insertColumns == null || insertColumns.Length == 0)
+            {
+                throw new ArgumentException("InsertColumns must contain at least one column.");
+            }
 
-        //                        // Loop again to find THEN part match
-        //                        foreach (var thenRow in crosswalkTableData)
-        //                        {
-        //                            // Find the THEN column in the same row as the WHEN column
-        //                            if (thenRow.ContainsKey(crosswalkColumn) && thenRow[crosswalkColumn].Equals(columnValue))
-        //                            {
-        //                                if (thenRow.ContainsKey(thenCrosswalkColumn))
-        //                                {
-        //                                    dynamicThenPart = thenPart.Replace($"[{thenCrosswalkTable}.{thenCrosswalkColumn}]", $"'{thenRow[thenCrosswalkColumn]}'");
-        //                                    break; // Exit the loop once the correct THEN value is found
-        //                                }
-        //                            }
-        //                        }
-        //                    }
+            // Build the INSERT INTO clause
+            StringBuilder insertClause = new StringBuilder();
+            insertClause.Append($@"
+INSERT INTO [dbo].[{extensionTable}]
+    (");
 
-        //                    // Append the dynamic WHEN ... THEN clause
-        //                    output.AppendLine($"  WHEN {dynamicWhenPart} THEN {dynamicThenPart}");
-        //                }
-        //            }
-        //        }
-        //    }
-        //    else
-        //    {
-        //        // If no _CrosswalkTable in WHEN part, append the clause as-is
-        //        output.AppendLine($"  WHEN {whenPart} THEN {thenPart}");
-        //    }
-        //}
+            // Build the SELECT clause
+            StringBuilder selectClause = new StringBuilder();
+            selectClause.Append(@"
+SELECT");
+
+            // Add columns to the SELECT clause
+            for (int i = 0; i < insertColumns.Length; i++)
+            {
+                string column = insertColumns[i];
+
+                // Check if the column has a CASE statement
+                if (columnCaseStatements.ContainsKey(column))
+                {
+                    insertClause.Append($"{insertColumns[i]}, ");
+
+                    // Apply the CASE statement for the column
+                    selectClause.Append($@"
+    {column} = {columnCaseStatements[column]},");
+                }
+            }
+
+            // Remove the trailing comma from the INSERT clause
+            insertClause.Remove(insertClause.Length - 2, 2);
+
+            insertClause.Append(")");
+
+            // Remove the trailing comma from the SELECT clause
+            selectClause.Remove(selectClause.Length - 1, 1);
+
+            // Add the FROM and ORDER BY clauses
+            selectClause.Append($@"
+FROM [dbo].[{sourceTable}]
+ORDER BY [ROWID];");
+
+            // Combine INSERT INTO and SELECT clauses
+            string insertQuery = insertClause.ToString() + selectClause.ToString();
+
+            return insertQuery;
+        }
 
         static string GenerateDynamicSelectStatement(string whenThenPart)
         {
